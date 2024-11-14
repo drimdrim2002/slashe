@@ -1,0 +1,78 @@
+{
+    "team_id": "TEAM095",
+    "team_name": "Slashe",
+    "submission_date": "2024-10-16 12:37:12",
+    "eval_date": "2024-10-16 12:37:20",
+    "test_results": {
+        "prob_1": {
+            "prob_name": "STAGE3_TEST_1",
+            "obj": 2598.2813500000016,
+            "time": 282.4690372943878,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_2": {
+            "prob_name": "STAGE3_TEST_2",
+            "obj": 2619.8965499999995,
+            "time": 464.80775809288025,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_3": {
+            "prob_name": "STAGE3_TEST_3",
+            "obj": 1958.6590000000015,
+            "time": 58.11794400215149,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_4": {
+            "prob_name": "STAGE3_TEST_4",
+            "obj": 2006.7435999999998,
+            "time": 169.02188396453857,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_5": {
+            "prob_name": "STAGE3_TEST_5",
+            "obj": 2810.5484000000006,
+            "time": 279.55098962783813,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_6": {
+            "prob_name": "STAGE3_TEST_6",
+            "obj": 2187.6869333333334,
+            "time": 29.5483136177063,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_7": {
+            "prob_name": "STAGE3_TEST_7",
+            "obj": 3019.4870666666657,
+            "time": 56.024850845336914,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_8": {
+            "prob_name": "STAGE3_TEST_8",
+            "obj": 2374.3558,
+            "time": 13.470988273620605,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_9": {
+            "prob_name": "STAGE3_TEST_9",
+            "obj": 2283.539,
+            "time": 26.790090799331665,
+            "status": "ok",
+            "status_detail": ""
+        },
+        "prob_10": {
+            "prob_name": "STAGE3_TEST_10",
+            "obj": 2732.508,
+            "time": 12.422729969024658,
+            "status": "ok",
+            "status_detail": ""
+        }
+    }
+}

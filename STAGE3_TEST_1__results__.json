@@ -1,0 +1,10 @@
+{
+    "feasible": false,
+    "infeasibility": "Solution must be a list of bundle information!",
+    "bundles": null,
+    "time": 95.18162775039673,
+    "timelimit_exception": false,
+    "exception": "Model too large for size-limited license; visit https://gurobi.com/unrestricted for more information",
+    "prob_name": "STAGE3_TEST_1",
+    "prob_file": "D:\\Project\\Python\\ogc_solutions\\input\\STAGE3_TEST_1.json"
+}
