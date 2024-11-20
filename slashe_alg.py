@@ -1,3 +1,5 @@
+import json
+
 from util import *
 import gurobipy as gp
 from gurobipy import GRB
@@ -394,23 +396,59 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     remaining_time = timelimit - (time.time() - start_time)
 
     file_name = 'all_feasible_bundles_K50_1.txt'
+
     # bundle_feasibility.append(
     #     ((shop_seq.astype(np.int16), dlv_seq.astype(np.int16)), rider, dist, vol, cost, status))
-    # delimiter = '///'
-    # for feasible_bundles in all_feasible_bundles:
-    #     shop_seq = feasible_bundles[0][0]
-    #     dlvry_seq = feasible_bundles[0][1]
-    #     print(shop_seq)
-    #     rider_type = feasible_bundles[1]
-    #     dist = feasible_bundles[2]
-    #     vol = feasible_bundles[3]
-    #     cost = feasible_bundles[4]
-    #     status = feasible_bundles[5]
-    #
-    #     print(
-    #         shop_seq + delimiter + dlvry_seq + delimiter + rider_type + delimiter + rider_type + delimiter + dist + delimiter + vol + delimiter + cost + delimiter + status)
+    delimiter = '///'
+    print('before mip')
+    output_data = []
+    for feasible_bundles in all_feasible_bundles:
+        print(type(feasible_bundles[0]))
+        print(type(feasible_bundles[0][1]))
+        print(type(feasible_bundles[1]))
+        print(type(feasible_bundles[2]))
+        print(type(feasible_bundles[3]))
+        print(type(feasible_bundles[4]))
+        print(type(feasible_bundles[5]))
+
+        shop_seq = feasible_bundles[0][0]
+        dlvry_seq = feasible_bundles[0][1]
+
+        shop_seq_list = convert_numpy_to_list(shop_seq)
+        dlvry_seq_list = convert_numpy_to_list(dlvry_seq)
+        rider_type = feasible_bundles[1]
+
+        dist = feasible_bundles[2]
+        vol = feasible_bundles[3]
+        cost = feasible_bundles[4]
+        status = feasible_bundles[5]
+        output_line = {}
+        output_line['shop_seq_list'] = shop_seq_list
+        output_line['dlvry_seq_list'] = dlvry_seq_list
+        output_line['rider_type'] = rider_type
+        output_line['dist'] = int(dist)
+        output_line['vol'] = int(vol)
+        output_line['cost'] = float(cost)
+        output_line['status'] = int(status)
+        output_data.append(output_line)
+        print(shop_seq, ", ", dlvry_seq, ', ', rider_type, ', ', dist, ' ', vol, ', ', cost, ', ', status)
+
+    with open(file_name, "w") as file:
+        json.dump(output_data, file, indent=4)
 
     final_bundles = solve_mip(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
+
+    print('final bundles with covering!!!')
+    for feasible_bundles in final_bundles:
+        shop_seq = feasible_bundles[0][0]
+        dlvry_seq = feasible_bundles[0][1]
+        rider_type = feasible_bundles[1]
+        dist = feasible_bundles[2]
+        vol = feasible_bundles[3]
+        cost = feasible_bundles[4]
+        status = feasible_bundles[5]
+        print(shop_seq, ", ", dlvry_seq, ', ', rider_type)
+
 
     final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
                                                                               ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T,
@@ -428,7 +466,15 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     ]
 
     return solution
-
+# numpy 배열을 리스트로 변환하는 함수
+def convert_numpy_to_list(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [convert_numpy_to_list(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_to_list(v) for k, v in obj.items()}
+    else: return
 
 def get_conditions():
     conditions = [
