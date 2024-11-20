@@ -24,6 +24,413 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     # A solution is a list of bundles
     solution = []
 
+    # K 및 time limit에 따라서 아래 parameter를 정한다.
+    conditions = get_conditions()
+
+    # index3: 3개 bundle을 만들 때 얼마나 많은 후보를 탐색하는지
+    # index4: 4개 bundle을 만들 때 얼마나 많은 후보를 탐색하는지
+    # index5: 5개 bundle을 만들 때 얼마나 많은 후보를 탐색하는지
+    # index6: 6개 bundle을 만들 때 얼마나 많은 후보를 탐색하는지
+    # time_limit2: 2개 bundle을 만들 때 제한 시간
+    # time_limit3: 3개 bundle을 만들 때 제한 시간
+    # time_limit4: 4개 bundle을 만들 때 제한 시간
+    # time_limit5: 5개 bundle을 만들 때 제한 시간
+    # time_limit6: 6개 bundle을 만들 때 제한 시간
+    # time_limit6: 6개 bundle을 만들 때 제한 시간
+    # max_2bundles: 2개 bundle의 최대 크기
+    # slack : 60초 time out을 피하기 위한 slack (slack이 5초면 55초에 종료 시작)
+
+    default_params = {
+        "index3": 1, "index4": 1, "index5": 1, "index6": 1,
+        "time_limit2": 10, "time_limit3": 2, "time_limit4": 2, "time_limit5": 2, "time_limit6": 2,
+        "max_2bundles": 100000, "slack": 5
+    }
+
+    params = default_params
+
+    for condition_dict in conditions:
+        if condition_dict["condition"](K, timelimit):
+            params = condition_dict["params"]
+            break
+
+    # debugging을 편하게 하기 위한 처리
+    if isdebug:
+        params['time_limit2'] = 9999
+        params['time_limit3'] = 9999
+        params['time_limit4'] = 9999
+        params['time_limit5'] = 9999
+        params['time_limit6'] = 9999
+
+    if "max_2bundles" not in params:
+        params["max_2bundles"] = default_params["max_2bundles"]
+
+    index3, index4, index5, index6 = params["index3"], params["index4"], params["index5"], params["index6"]
+    time_limit2, time_limit3, time_limit4, time_limit5, time_limit6 = params["time_limit2"], params["time_limit3"], \
+        params["time_limit4"], params["time_limit5"], params["time_limit6"]
+    max_2bundles, slack = params["max_2bundles"], params["slack"]
+
+    for r in all_riders:
+        r.T = np.round(dist_mat / r.speed + r.service_time)
+        if r.type == 'BIKE':
+            T_B = r.T
+            VC_B = r.var_cost
+            FC_B = r.fixed_cost
+            CAPA_B = r.capa
+            AVA_B = r.available_number
+
+        elif r.type == 'WALK':
+            T_W = r.T
+            VC_W = r.var_cost
+            FC_W = r.fixed_cost
+            CAPA_W = r.capa
+            AVA_W = r.available_number
+
+        elif r.type == 'CAR':
+            T_C = r.T
+            VC_C = r.var_cost
+            FC_C = r.fixed_cost
+            CAPA_C = r.capa
+            AVA_C = r.available_number
+
+    # ALL_T[0] = T_B, ALL_T[1] = T_W, ALL_T[2] = T_C
+    ALL_T = np.stack([T_B, T_W, T_C])
+
+    # ALL_VC[0] = VC_B, ALL_VC[1] = VC_W, ALL_VC[2] = VC_C
+    ALL_VC = np.array([VC_B, VC_W, VC_C])
+
+    # ALL_FC[0] = FC_B, ALL_FC[1] = FC_W, ALL_FC[2] = FC_C
+    ALL_FC = np.array([FC_B, FC_W, FC_C])
+
+    # ALL_CAPA[0] = CAPA_B, ALL_CAPA[1] = CAPA_W, ALL_CAPA[2] = CAPA_C
+    ALL_CAPA = np.stack([CAPA_B, CAPA_W, CAPA_C])
+
+    ALL_AVA = np.stack([AVA_B, AVA_W, AVA_C])
+
+    ORDER_ORDERTIMES = np.array(
+        [o.order_time for o in all_orders]
+    )
+
+    ORDER_READYTIMES = np.array(
+        [o.ready_time for o in all_orders]
+    )
+
+    ORDER_DEADLINES = np.array(
+        [o.deadline for o in all_orders]
+    )
+
+    ORDER_VOLUMES = np.array(
+        [o.volume for o in all_orders]
+    )
+
+    D = dist_mat
+
+    def numpy_permutations(n):
+        a = np.zeros((math.factorial(n), n), np.int16)
+        f = 1
+        for m in range(2, n + 1):
+            b = a[:f, n - m + 1:]  # the block of permutations of range(m-1)
+            for i in range(1, m):
+                a[i * f:(i + 1) * f, n - m] = i
+                a[i * f:(i + 1) * f, n - m + 1:] = b + (b >= i)
+            b += 1
+            f *= m
+
+        return a
+
+    MAX_BUNDLE_SIZE = 7
+
+    # [[], [[0]], [[0 1]
+    #  [1 0]], [[0 1 2]
+    #  [0 2 1]
+    #  [1 0 2]
+    #  [1 2 0]
+    #  [2 0 1] ...
+    PRECALCULATED_PERMUTATIONS = numba.typed.List([
+        numpy_permutations(n) for n in range(0, MAX_BUNDLE_SIZE + 1)
+    ])
+
+    numba.set_num_threads(4)
+
+    candidate_1_orders = [np.array([o], dtype=np.int16) for o in range(K)]
+    candidate_1_riders = [np.array([0, 1, 2], dtype=np.int16) for o in range(K)]
+
+    # 주어진 order set에 가능한 riders 조함
+    # [0] -> Bike only
+    # [2] -> Car only
+    # [0,2] -> Bike & Car
+    # [0,1,2] -> All)
+    # Walk만 가능한건 불가능!
+
+    # feasible_riders_for_1_orders: 각 주문별로 배송 가능한 rider type
+    ### 00 = {tuple: 2} ([0], [0 1 2])  0번 주문은 Bike, Walk, Car
+    ### 04 = {tuple: 2} ([4], [0 2])    4번 주문은 Bike, Car
+
+    # feasible_1_bundles, shop_seq, dlvry_seq, rider, dist, vol, cost, status
+    ### 000 = {tuple: 6}(([0], [0]), 0, 1099, 18, 5659.4, 0)
+    ### 001 = {tuple: 6}(([0], [0]), 1, 1099, 18, 5329.7, 0)
+    ### 002 = {tuple: 6}(([0], [0]), 2, 1099, 18, 6099.0, 0)
+    feasible_riders_for_1_orders, feasible_1_bundles = batch_get_optimal_route_with_riders_numba_v2(
+        to_numba_List(candidate_1_orders), to_numba_List(candidate_1_riders), ORDER_READYTIMES, ORDER_DEADLINES,
+        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=10)
+    print(
+        f'* 1-bundle: candidate={sum([len(r) for r in feasible_riders_for_1_orders])}, feasible={len(feasible_1_bundles)}, elapsed time={time.time() - start_time}')
+    all_feasible_bundles = feasible_1_bundles
+
+    # candidate_2_orders: 2개씩 묶어볼만한 주문들
+    # 0000 = {ndarray: (2,)} [0 1]
+    # 0001 = {ndarray: (2,)} [0 2]
+    # 0002 = {ndarray: (2,)} [0 3]
+    # 0003 = {ndarray: (2,)} [0 4]
+    # candidate_2_riders: 2개씩 묶었을 때 가능한 rider들
+    # 0000 = {ndarray: (3,)} [0 1 2]
+    # 0001 = {ndarray: (3,)} [0 1 2]
+    # 0002 = {ndarray: (3,)} [0 1 2]
+    # 0003 = {ndarray: (2,)} [0 2]
+    # len(candidate_2_orders) = len(candidate_2_riders)
+    candidate_2_orders, candidate_2_riders = make_2_bundle_candidates_v2(feasible_riders_for_1_orders)
+
+    feasible_riders_for_2_orders, feasible_2_bundles = batch_get_optimal_route_with_riders_v2(candidate_2_orders,
+                                                                                              candidate_2_riders,
+                                                                                              ORDER_READYTIMES,
+                                                                                              ORDER_DEADLINES,
+                                                                                              ORDER_VOLUMES, D, ALL_T,
+                                                                                              ALL_VC, ALL_FC, ALL_CAPA,
+                                                                                              PRECALCULATED_PERMUTATIONS,
+                                                                                              time_limit=time_limit2)
+
+    print(
+        f'* 2-bundle: candidate={sum([len(r) for r in candidate_2_riders])}, feasible={len(feasible_2_bundles)}, elapsed time={time.time() - start_time}')
+
+    if (timelimit <= 15 and len(feasible_2_bundles) >= 200000) or (
+            30 <= timelimit < 60 and len(feasible_2_bundles) >= 250000) or (
+            60 <= timelimit < 70 and len(feasible_2_bundles) >= 500000):
+        sorted_candidates = sorted(feasible_2_bundles, key=lambda bundle: bundle[4])
+        feasible_2_bundles = sorted_candidates[:max_2bundles]
+        feasible_riders_for_2_orders = [(bundle[0][0], np.array([bundle[1]], dtype=np.int16)) for bundle in
+                                        feasible_2_bundles]
+        all_feasible_bundles.extend(feasible_2_bundles)
+
+    else:
+        all_feasible_bundles.extend(feasible_2_bundles)
+
+    elapsed_time = time.time() - start_time
+    if (elapsed_time < timelimit * 0.5):
+
+        # Penalty Matrix 만들기 (초기값은 100)
+        penalty_mat = np.ones((K, K)) * 100
+        for orders, _ in feasible_riders_for_2_orders:
+            i, j = orders[0], orders[1]
+            # i,j 간은 이동이 가능하기 때문에 cost가 0
+            penalty_mat[i, j] = 0
+            penalty_mat[j, i] = 0
+
+        # 번들이 만들어질 가능성 점수 (값이 작을수록 번들 성립 가능성 높음)
+        # 가게 거리 기준
+        shop_dist_mat = D[:K, :K]
+        shop_dist_bundle_score_mat = (shop_dist_mat) / shop_dist_mat.max()
+
+        # 두개 번들이 불가능한 조합에 큰 페널티 값 더해줌
+        shop_dist_bundle_score_mat += penalty_mat
+
+        # i, j간 상대적인 거리를 계산
+        lambda_value = 0.5  # shop과 dlvry 중 무엇에 가중치를 더 둘 것인가?
+        weighted_dist_bundle_score_mat = calculate_weighted_dist_mat(all_orders, lambda_value)
+        weighted_dist_bundle_score_mat += penalty_mat
+
+        # 고객 거리 기준
+        dlv_dist_mat = D[K:2 * K, K:2 * K]
+        dlv_dist_bundle_score_mat = (dlv_dist_mat) / dlv_dist_mat.max()
+        dlv_dist_bundle_score_mat += penalty_mat
+
+        combined_bundle_score_mat = (
+                shop_dist_bundle_score_mat +
+                weighted_dist_bundle_score_mat +
+                dlv_dist_bundle_score_mat
+        )
+
+        candidate_3_orders_shop, candidate_3_riders_shop = make_larger_bundle_candidates_v2(
+            feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index3)
+
+        feasible_riders_for_3_orders, feasible_3_bundles = batch_get_optimal_route_with_riders_v2(
+            candidate_3_orders_shop, candidate_3_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
+            ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit3)
+        print(
+            f'* 3-bundle: candidate={sum([len(r) for r in candidate_3_riders_shop])}, feasible={len(feasible_3_bundles)}, elapsed time={time.time() - start_time}')
+
+        all_feasible_bundles.extend(feasible_3_bundles)
+
+        candidate_4_orders_shop, candidate_4_riders_shop = make_larger_bundle_candidates_v2(
+            feasible_riders_for_3_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index4)
+
+        feasible_riders_for_4_orders, feasible_4_bundles = batch_get_optimal_route_with_riders_v2(
+            candidate_4_orders_shop, candidate_4_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
+            ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit4)
+        print(
+            f'* 4-bundle: candidate={sum([len(r) for r in candidate_4_riders_shop])}, feasible={len(feasible_4_bundles)}, elapsed time={time.time() - start_time}')
+
+        all_feasible_bundles.extend(feasible_4_bundles)
+
+        elapsed_time = time.time() - start_time
+        if (len(feasible_4_bundles) >= 10) and (elapsed_time < timelimit * 0.3):
+            candidate_5_orders_shop, candidate_5_riders_shop = make_larger_bundle_candidates_v2(
+                feasible_riders_for_4_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index5)
+
+            feasible_riders_for_5_orders, feasible_5_bundles = batch_get_optimal_route_with_riders_v2(
+                candidate_5_orders_shop, candidate_5_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
+                ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit5)
+            print(
+                f'* 5-bundle: candidate={sum([len(r) for r in candidate_5_riders_shop])}, feasible={len(feasible_5_bundles)}, elapsed time={time.time() - start_time}')
+
+            all_feasible_bundles.extend(feasible_5_bundles)
+
+            elapsed_time = time.time() - start_time
+            if (timelimit > 15) and (len(feasible_5_bundles) >= 10) and (elapsed_time < timelimit * 0.3):
+                candidate_6_orders_shop, candidate_6_riders_shop = make_larger_bundle_candidates_v2(
+                    feasible_riders_for_5_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
+                    num_tries=index6)
+
+                if (len(candidate_6_orders_shop) > 0):
+                    feasible_riders_for_6_orders, feasible_6_bundles = batch_get_optimal_route_with_riders_v2(
+                        candidate_6_orders_shop, candidate_6_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES,
+                        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
+                        time_limit=time_limit6)
+                    print(
+                        f'* 6-bundle: candidate={sum([len(r) for r in candidate_6_riders_shop])}, feasible={len(feasible_6_bundles)}, elapsed time={time.time() - start_time}')
+
+                    all_feasible_bundles.extend(feasible_6_bundles)
+
+        print('all_feasible_bundles sample one ')
+        # bundle_feasibility.append(
+        #     ((shop_seq.astype(np.int16), dlv_seq.astype(np.int16)), rider, dist, vol, cost, status))
+        print(all_feasible_bundles[200])
+
+        if (timelimit >= 60):
+            elapsed_time = time.time() - start_time
+            if elapsed_time < timelimit * 0.3:
+                print('* generating more bundles')
+
+                index3 *= 2
+                index4 *= 2
+                index5 *= 2
+                index6 *= 2
+
+                # candidate_3_orders_shop, candidate_3_riders_shop = make_larger_bundle_candidates_v2(
+                #     feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
+                #     num_tries=index3)
+                # feasible_riders_for_3_orders, feasible_3_bundles = batch_get_optimal_route_with_riders_v2(
+                #     candidate_3_orders_shop, candidate_3_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES,
+                #     D,
+                #     ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit3)
+
+                candidate_3_orders_shop2, candidate_3_riders_shop2 = make_larger_bundle_candidates_v2(
+                    feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
+                    num_tries=index3)
+                feasible_riders_for_3_orders2, feasible_3_bundles2 = batch_get_optimal_route_with_riders_v2(
+                    candidate_3_orders_shop2, candidate_3_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
+                    ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
+                    time_limit=time_limit3)
+
+                print(
+                    f'* Extra 3-bundle: candidate={sum([len(r) for r in candidate_3_riders_shop2])}, feasible={len(feasible_3_bundles2)}, elapsed time={time.time() - start_time}')
+                all_feasible_bundles.extend(feasible_3_bundles2)
+
+                candidate_4_orders_shop2, candidate_4_riders_shop2 = make_larger_bundle_candidates_v2(
+                    feasible_riders_for_3_orders2, feasible_riders_for_1_orders, combined_bundle_score_mat,
+                    num_tries=index4)
+
+                elapsed_time = time.time() - start_time
+                if elapsed_time < timelimit * 0.3:
+                    feasible_riders_for_4_orders2, feasible_4_bundles2 = batch_get_optimal_route_with_riders_v2(
+                        candidate_4_orders_shop2, candidate_4_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
+                        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
+                        time_limit=time_limit4)
+
+                    print(
+                        f'* Extra 4-bundle: candidate={sum([len(r) for r in candidate_4_riders_shop2])}, feasible={len(feasible_4_bundles2)}, elapsed time={time.time() - start_time}')
+                    all_feasible_bundles.extend(feasible_4_bundles2)
+
+                    elapsed_time = time.time() - start_time
+                    if (len(feasible_4_bundles2) >= 10) and (elapsed_time < timelimit * 0.3):
+                        candidate_5_orders_shop2, candidate_5_riders_shop2 = make_larger_bundle_candidates_v2(
+                            feasible_riders_for_4_orders2, feasible_riders_for_1_orders, combined_bundle_score_mat,
+                            num_tries=index5)
+
+                        elapsed_time = time.time() - start_time
+                        if elapsed_time < timelimit * 0.3:
+                            feasible_riders_for_5_orders2, feasible_5_bundles2 = batch_get_optimal_route_with_riders_v2(
+                                candidate_5_orders_shop2, candidate_5_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
+                                ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
+                                time_limit=time_limit5)
+
+                            print(
+                                f'* Extra 5-bundle: candidate={sum([len(r) for r in candidate_5_riders_shop2])}, feasible={len(feasible_5_bundles2)}, elapsed time={time.time() - start_time}')
+                            all_feasible_bundles.extend(feasible_5_bundles2)
+
+                            elapsed_time = time.time() - start_time
+                            if (len(feasible_5_bundles2) >= 10) and (elapsed_time < timelimit * 0.3):
+
+                                candidate_6_orders_shop2, candidate_6_riders_shop2 = make_larger_bundle_candidates_v2(
+                                    feasible_riders_for_5_orders2, feasible_riders_for_1_orders,
+                                    combined_bundle_score_mat, num_tries=index6)
+
+                                elapsed_time = time.time() - start_time
+                                if elapsed_time < timelimit * 0.3:
+                                    feasible_riders_for_6_orders2, feasible_6_bundles2 = batch_get_optimal_route_with_riders_v2(
+                                        candidate_6_orders_shop2, candidate_6_riders_shop2, ORDER_READYTIMES,
+                                        ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA,
+                                        PRECALCULATED_PERMUTATIONS, time_limit=time_limit6)
+
+                                    print(
+                                        f'* Extra 6-bundle: candidate={sum([len(r) for r in candidate_6_riders_shop2])}, feasible={len(feasible_6_bundles2)}, elapsed time={time.time() - start_time}')
+                                    all_feasible_bundles.extend(feasible_6_bundles2)
+
+                print(
+                    f'* 중복 제거 전 all-bundle: feasible={len(all_feasible_bundles)}, elapsed time={time.time() - start_time}')
+                # (1,2,3) , (2,3,1), (3,1,2) 모두 중복이다
+                _, all_feasible_bundles = remove_duplicates_in_bundles([], all_feasible_bundles)
+
+    print(f'* 중복 제거 후 all-bundle: feasible={len(all_feasible_bundles)}, elapsed time={time.time() - start_time}')
+
+    remaining_time = timelimit - (time.time() - start_time)
+
+    file_name = 'all_feasible_bundles_K50_1.txt'
+    # bundle_feasibility.append(
+    #     ((shop_seq.astype(np.int16), dlv_seq.astype(np.int16)), rider, dist, vol, cost, status))
+    # delimiter = '///'
+    # for feasible_bundles in all_feasible_bundles:
+    #     shop_seq = feasible_bundles[0][0]
+    #     dlvry_seq = feasible_bundles[0][1]
+    #     print(shop_seq)
+    #     rider_type = feasible_bundles[1]
+    #     dist = feasible_bundles[2]
+    #     vol = feasible_bundles[3]
+    #     cost = feasible_bundles[4]
+    #     status = feasible_bundles[5]
+    #
+    #     print(
+    #         shop_seq + delimiter + dlvry_seq + delimiter + rider_type + delimiter + rider_type + delimiter + dist + delimiter + vol + delimiter + cost + delimiter + status)
+
+    final_bundles = solve_mip(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
+
+    final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
+                                                                              ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T,
+                                                                              ALL_VC, ALL_FC, ALL_CAPA,
+                                                                              PRECALCULATED_PERMUTATIONS)
+
+    if status == True:
+        remaining_time = timelimit - (time.time() - start_time)
+        final_bundles = solve_mip(final_bundles, ALL_AVA, K, remaining_time - 0.5, covering=False)
+
+    RIDER_TYPE = {0: 'BIKE', 1: 'WALK', 2: 'CAR'}
+    solution = [
+        [RIDER_TYPE[bundle[1]], bundle[0][0].tolist(), bundle[0][1].tolist()]
+        for bundle in final_bundles
+    ]
+
+    return solution
+
+
+def get_conditions():
     conditions = [
 
         # 1016
@@ -205,351 +612,25 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
                        "slack": 20}
         }
     ]
-
-    default_params = {
-        "index3": 1, "index4": 1, "index5": 1, "index6": 1,
-        "time_limit2": 10, "time_limit3": 2, "time_limit4": 2, "time_limit5": 2, "time_limit6": 2,
-        "max_2bundles": 100000, "slack": 5
-    }
-
-    params = default_params
-
-    for condition_dict in conditions:
-        if condition_dict["condition"](K, timelimit):
-            params = condition_dict["params"]
-            break
-
-    if isdebug:
-        params['time_limit2'] = 9999
-        params['time_limit3'] = 9999
-        params['time_limit4'] = 9999
-        params['time_limit5'] = 9999
-        params['time_limit6'] = 9999
-
-    if "max_2bundles" not in params:
-        params["max_2bundles"] = default_params["max_2bundles"]
-
-    index3, index4, index5, index6 = params["index3"], params["index4"], params["index5"], params["index6"]
-    time_limit2, time_limit3, time_limit4, time_limit5, time_limit6 = params["time_limit2"], params["time_limit3"], \
-    params["time_limit4"], params["time_limit5"], params["time_limit6"]
-    max_2bundles, slack = params["max_2bundles"], params["slack"]
-
-    for r in all_riders:
-        r.T = np.round(dist_mat / r.speed + r.service_time)
-        if r.type == 'BIKE':
-            T_B = r.T
-            VC_B = r.var_cost
-            FC_B = r.fixed_cost
-            CAPA_B = r.capa
-            AVA_B = r.available_number
-
-        elif r.type == 'WALK':
-            T_W = r.T
-            VC_W = r.var_cost
-            FC_W = r.fixed_cost
-            CAPA_W = r.capa
-            AVA_W = r.available_number
-
-        elif r.type == 'CAR':
-            T_C = r.T
-            VC_C = r.var_cost
-            FC_C = r.fixed_cost
-            CAPA_C = r.capa
-            AVA_C = r.available_number
-
-    # ALL_T[0] = T_B, ALL_T[1] = T_W, ALL_T[2] = T_C
-    ALL_T = np.stack([T_B, T_W, T_C])
-
-    # ALL_VC[0] = VC_B, ALL_VC[1] = VC_W, ALL_VC[2] = VC_C
-    ALL_VC = np.array([VC_B, VC_W, VC_C])
-
-    # ALL_FC[0] = FC_B, ALL_FC[1] = FC_W, ALL_FC[2] = FC_C
-    ALL_FC = np.array([FC_B, FC_W, FC_C])
-
-    # ALL_CAPA[0] = CAPA_B, ALL_CAPA[1] = CAPA_W, ALL_CAPA[2] = CAPA_C
-    ALL_CAPA = np.stack([CAPA_B, CAPA_W, CAPA_C])
-
-    ALL_AVA = np.stack([AVA_B, AVA_W, AVA_C])
-
-    ORDER_ORDERTIMES = np.array(
-        [o.order_time for o in all_orders]
-    )
-
-    ORDER_READYTIMES = np.array(
-        [o.ready_time for o in all_orders]
-    )
-
-    ORDER_DEADLINES = np.array(
-        [o.deadline for o in all_orders]
-    )
-
-    ORDER_VOLUMES = np.array(
-        [o.volume for o in all_orders]
-    )
-
-    D = dist_mat
-
-    def numpy_permutations(n):
-        a = np.zeros((math.factorial(n), n), np.int16)
-        f = 1
-        for m in range(2, n + 1):
-            b = a[:f, n - m + 1:]  # the block of permutations of range(m-1)
-            for i in range(1, m):
-                a[i * f:(i + 1) * f, n - m] = i
-                a[i * f:(i + 1) * f, n - m + 1:] = b + (b >= i)
-            b += 1
-            f *= m
-
-        return a
-
-    MAX_BUNDLE_SIZE = 7
-
-    # [[], [[0]], [[0 1]
-    #  [1 0]], [[0 1 2]
-    #  [0 2 1]
-    #  [1 0 2]
-    #  [1 2 0]
-    #  [2 0 1] ...
-    PRECALCULATED_PERMUTATIONS = numba.typed.List([
-        numpy_permutations(n) for n in range(0, MAX_BUNDLE_SIZE + 1)
-    ])
-
-    numba.set_num_threads(4)
-
-    candidate_1_orders = [np.array([o], dtype=np.int16) for o in range(K)]
-    candidate_1_riders = [np.array([0, 1, 2], dtype=np.int16) for o in range(K)]
-
-    feasible_riders_for_1_orders, feasible_1_bundles = batch_get_optimal_route_with_riders_numba_v2(
-        to_numba_List(candidate_1_orders), to_numba_List(candidate_1_riders), ORDER_READYTIMES, ORDER_DEADLINES,
-        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=10)
-    print(f"* len(feasible_1_bundles): {len(feasible_1_bundles)}")
-
-    all_feasible_bundles = feasible_1_bundles
-
-    candidate_2_orders, candidate_2_riders = make_2_bundle_candidates_v2(feasible_riders_for_1_orders)
-
-    feasible_riders_for_2_orders, feasible_2_bundles = batch_get_optimal_route_with_riders_v2(candidate_2_orders,
-                                                                                              candidate_2_riders,
-                                                                                              ORDER_READYTIMES,
-                                                                                              ORDER_DEADLINES,
-                                                                                              ORDER_VOLUMES, D, ALL_T,
-                                                                                              ALL_VC, ALL_FC, ALL_CAPA,
-                                                                                              PRECALCULATED_PERMUTATIONS,
-                                                                                              time_limit=time_limit2)
-
-    print(
-        f'* 2-bundle: candidate={sum([len(r) for r in candidate_2_riders])}, feasible={len(feasible_2_bundles)}, elapsed time={time.time() - start_time}')
-
-    if (timelimit <= 15 and len(feasible_2_bundles) >= 200000) or (
-            30 <= timelimit < 60 and len(feasible_2_bundles) >= 250000) or (
-            60 <= timelimit < 70 and len(feasible_2_bundles) >= 500000):
-        sorted_candidates = sorted(feasible_2_bundles, key=lambda bundle: bundle[4])
-        feasible_2_bundles = sorted_candidates[:max_2bundles]
-        feasible_riders_for_2_orders = [(bundle[0][0], np.array([bundle[1]], dtype=np.int16)) for bundle in
-                                        feasible_2_bundles]
-        all_feasible_bundles.extend(feasible_2_bundles)
-
-    else:
-        all_feasible_bundles.extend(feasible_2_bundles)
-
-    elapsed_time = time.time() - start_time
-    if (elapsed_time < timelimit * 0.5):
-
-        penalty_mat = np.ones((K, K)) * 100
-        for orders, _ in feasible_riders_for_2_orders:
-            i, j = orders[0], orders[1]
-            penalty_mat[i, j] = 0
-            penalty_mat[j, i] = 0
-
-        # 번들이 만들어질 가능성 점수 (값이 작을수록 번들 성립 가능성 높음)
-        # 가게 거리 기준
-        shop_dist_mat = D[:K, :K]
-        shop_dist_bundle_score_mat = (shop_dist_mat) / shop_dist_mat.max()
-
-        # 두개 번들이 불가능한 조합에 큰 페널티 값 더해줌
-        shop_dist_bundle_score_mat += penalty_mat
-
-        # i, j간 상대적인 거리를 계산
-        lambda_value = 0.5
-        weighted_dist_bundle_score_mat = calculate_weighted_dist_mat(all_orders, lambda_value)
-        weighted_dist_bundle_score_mat += penalty_mat
-
-        # 고객 거리 기준
-        dlv_dist_mat = D[K:2 * K, K:2 * K]
-        dlv_dist_bundle_score_mat = (dlv_dist_mat) / dlv_dist_mat.max()
-        dlv_dist_bundle_score_mat += penalty_mat
-
-        combined_bundle_score_mat = (
-                shop_dist_bundle_score_mat +
-                weighted_dist_bundle_score_mat +
-                dlv_dist_bundle_score_mat
-        )
-
-        candidate_3_orders_shop, candidate_3_riders_shop = make_larger_bundle_candidates_v2(
-            feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index3)
-
-        feasible_riders_for_3_orders, feasible_3_bundles = batch_get_optimal_route_with_riders_v2(
-            candidate_3_orders_shop, candidate_3_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
-            ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit3)
-        print(
-            f'* 3-bundle: candidate={sum([len(r) for r in candidate_3_riders_shop])}, feasible={len(feasible_3_bundles)}, elapsed time={time.time() - start_time}')
-
-        all_feasible_bundles.extend(feasible_3_bundles)
-
-        candidate_4_orders_shop, candidate_4_riders_shop = make_larger_bundle_candidates_v2(
-            feasible_riders_for_3_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index4)
-
-        feasible_riders_for_4_orders, feasible_4_bundles = batch_get_optimal_route_with_riders_v2(
-            candidate_4_orders_shop, candidate_4_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
-            ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit4)
-        print(
-            f'* 4-bundle: candidate={sum([len(r) for r in candidate_4_riders_shop])}, feasible={len(feasible_4_bundles)}, elapsed time={time.time() - start_time}')
-
-        all_feasible_bundles.extend(feasible_4_bundles)
-
-        elapsed_time = time.time() - start_time
-        if (len(feasible_4_bundles) >= 10) and (elapsed_time < timelimit * 0.3):
-            candidate_5_orders_shop, candidate_5_riders_shop = make_larger_bundle_candidates_v2(
-                feasible_riders_for_4_orders, feasible_riders_for_1_orders, combined_bundle_score_mat, num_tries=index5)
-
-            feasible_riders_for_5_orders, feasible_5_bundles = batch_get_optimal_route_with_riders_v2(
-                candidate_5_orders_shop, candidate_5_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES, D,
-                ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit5)
-            print(
-                f'* 5-bundle: candidate={sum([len(r) for r in candidate_5_riders_shop])}, feasible={len(feasible_5_bundles)}, elapsed time={time.time() - start_time}')
-
-            all_feasible_bundles.extend(feasible_5_bundles)
-
-            elapsed_time = time.time() - start_time
-            if (timelimit > 15) and (len(feasible_5_bundles) >= 10) and (elapsed_time < timelimit * 0.3):
-                candidate_6_orders_shop, candidate_6_riders_shop = make_larger_bundle_candidates_v2(
-                    feasible_riders_for_5_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
-                    num_tries=index6)
-
-                if (len(candidate_6_orders_shop) > 0):
-                    feasible_riders_for_6_orders, feasible_6_bundles = batch_get_optimal_route_with_riders_v2(
-                        candidate_6_orders_shop, candidate_6_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES,
-                        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
-                        time_limit=time_limit6)
-                    print(
-                        f'* 6-bundle: candidate={sum([len(r) for r in candidate_6_riders_shop])}, feasible={len(feasible_6_bundles)}, elapsed time={time.time() - start_time}')
-
-                    all_feasible_bundles.extend(feasible_6_bundles)
-
-        print('all_feasible_bundles sample')
-        # bundle_feasibility.append(
-        #     ((shop_seq.astype(np.int16), dlv_seq.astype(np.int16)), rider, dist, vol, cost, status))
-        print(all_feasible_bundles[200])
-
-
-        if (timelimit >= 60):
-            elapsed_time = time.time() - start_time
-            if elapsed_time < timelimit * 0.3:
-                print('* generating more bundles')
-
-                index3 *= 2
-                index4 *= 2
-                index5 *= 2
-                index6 *= 2
-
-                # candidate_3_orders_shop, candidate_3_riders_shop = make_larger_bundle_candidates_v2(
-                #     feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
-                #     num_tries=index3)
-                # feasible_riders_for_3_orders, feasible_3_bundles = batch_get_optimal_route_with_riders_v2(
-                #     candidate_3_orders_shop, candidate_3_riders_shop, ORDER_READYTIMES, ORDER_DEADLINES, ORDER_VOLUMES,
-                #     D,
-                #     ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS, time_limit=time_limit3)
-
-                candidate_3_orders_shop2, candidate_3_riders_shop2 = make_larger_bundle_candidates_v2(
-                    feasible_riders_for_2_orders, feasible_riders_for_1_orders, combined_bundle_score_mat,
-                    num_tries=index3)
-                feasible_riders_for_3_orders2, feasible_3_bundles2 = batch_get_optimal_route_with_riders_v2(
-                    candidate_3_orders_shop2, candidate_3_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
-                    ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
-                    time_limit=time_limit3)
-
-                print(
-                    f'* Extra 3-bundle: candidate={sum([len(r) for r in candidate_3_riders_shop2])}, feasible={len(feasible_3_bundles2)}, elapsed time={time.time() - start_time}')
-                all_feasible_bundles.extend(feasible_3_bundles2)
-
-                candidate_4_orders_shop2, candidate_4_riders_shop2 = make_larger_bundle_candidates_v2(
-                    feasible_riders_for_3_orders2, feasible_riders_for_1_orders, combined_bundle_score_mat,
-                    num_tries=index4)
-
-                elapsed_time = time.time() - start_time
-                if elapsed_time < timelimit * 0.3:
-                    feasible_riders_for_4_orders2, feasible_4_bundles2 = batch_get_optimal_route_with_riders_v2(
-                        candidate_4_orders_shop2, candidate_4_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
-                        ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
-                        time_limit=time_limit4)
-
-                    print(
-                        f'* Extra 4-bundle: candidate={sum([len(r) for r in candidate_4_riders_shop2])}, feasible={len(feasible_4_bundles2)}, elapsed time={time.time() - start_time}')
-                    all_feasible_bundles.extend(feasible_4_bundles2)
-
-                    elapsed_time = time.time() - start_time
-                    if (len(feasible_4_bundles2) >= 10) and (elapsed_time < timelimit * 0.3):
-                        candidate_5_orders_shop2, candidate_5_riders_shop2 = make_larger_bundle_candidates_v2(
-                            feasible_riders_for_4_orders2, feasible_riders_for_1_orders, combined_bundle_score_mat,
-                            num_tries=index5)
-
-                        elapsed_time = time.time() - start_time
-                        if elapsed_time < timelimit * 0.3:
-                            feasible_riders_for_5_orders2, feasible_5_bundles2 = batch_get_optimal_route_with_riders_v2(
-                                candidate_5_orders_shop2, candidate_5_riders_shop2, ORDER_READYTIMES, ORDER_DEADLINES,
-                                ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA, PRECALCULATED_PERMUTATIONS,
-                                time_limit=time_limit5)
-
-                            print(
-                                f'* Extra 5-bundle: candidate={sum([len(r) for r in candidate_5_riders_shop2])}, feasible={len(feasible_5_bundles2)}, elapsed time={time.time() - start_time}')
-                            all_feasible_bundles.extend(feasible_5_bundles2)
-
-                            elapsed_time = time.time() - start_time
-                            if (len(feasible_5_bundles2) >= 10) and (elapsed_time < timelimit * 0.3):
-
-                                candidate_6_orders_shop2, candidate_6_riders_shop2 = make_larger_bundle_candidates_v2(
-                                    feasible_riders_for_5_orders2, feasible_riders_for_1_orders,
-                                    combined_bundle_score_mat, num_tries=index6)
-
-                                elapsed_time = time.time() - start_time
-                                if elapsed_time < timelimit * 0.3:
-                                    feasible_riders_for_6_orders2, feasible_6_bundles2 = batch_get_optimal_route_with_riders_v2(
-                                        candidate_6_orders_shop2, candidate_6_riders_shop2, ORDER_READYTIMES,
-                                        ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T, ALL_VC, ALL_FC, ALL_CAPA,
-                                        PRECALCULATED_PERMUTATIONS, time_limit=time_limit6)
-
-                                    print(
-                                        f'* Extra 6-bundle: candidate={sum([len(r) for r in candidate_6_riders_shop2])}, feasible={len(feasible_6_bundles2)}, elapsed time={time.time() - start_time}')
-                                    all_feasible_bundles.extend(feasible_6_bundles2)
-
-                print(
-                    f'* 중복 제거 전 all-bundle: feasible={len(all_feasible_bundles)}, elapsed time={time.time() - start_time}')
-                _, all_feasible_bundles = remove_duplicates_in_bundles([], all_feasible_bundles)
-
-    print(f'* all-bundle: feasible={len(all_feasible_bundles)}, elapsed time={time.time() - start_time}')
-
-    remaining_time = timelimit - (time.time() - start_time)
-    final_bundles = solve_mip(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
-
-    final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
-                                                                              ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T,
-                                                                              ALL_VC, ALL_FC, ALL_CAPA,
-                                                                              PRECALCULATED_PERMUTATIONS)
-
-    if status == True:
-        remaining_time = timelimit - (time.time() - start_time)
-        final_bundles = solve_mip(final_bundles, ALL_AVA, K, remaining_time - 0.5, covering=False)
-
-    RIDER_TYPE = {0: 'BIKE', 1: 'WALK', 2: 'CAR'}
-    solution = [
-        [RIDER_TYPE[bundle[1]], bundle[0][0].tolist(), bundle[0][1].tolist()]
-        for bundle in final_bundles
-    ]
-
-    return solution
-
+    return conditions
+
+
+# Function to convert the list to the desired format and save to a text file
+# def save_list_to_text_file(data, filename):
+#     with open(filename, 'w') as file:
+#         # for item in data:
+#         #     if isinstance(item, list):
+#         #         file.write(f"[{' '.join(map(str, item))}], ")
+#         #     else:
+#         #         file.write(f"{item}, ")
+#         # file.write("\n")
+#         # Format the first two sublists
+#         formatted_str = f"([{ ' '.join(map(str, data[0][0])) }], [{ ' '.join(map(str, data[0][1])) }]), " # Add the remaining elements
+#         formatted_str += ', '.join(map(str, data[1:])) + '\n'
+#         file.write(formatted_str)
 
 def solve_mip(feasible_bundles, ALL_AVA, K, timelimit, covering=False):
+    print(f'solve mip with corvering :{covering}')
     mip_start_time = time.time()
 
     get_bdl_shop_seq = lambda b: b[0][0]
@@ -700,24 +781,30 @@ def get_optimal_route_numba_v2(orders, rider, ORDER_READYTIMES, ORDER_DEADLINES,
 
     orders = orders.astype(np.int16)
 
+    # total volume check
     total_vol = sum([ORDER_VOLUMES[o] for o in orders])
-
     if total_vol > ALL_CAPA[rider]:
         return -1, 0, (orders, orders), 0, 0.0
 
+    # latest shop ready time + lead time > earlist delivery time
     latest_readytime_order = orders[np.argmax(ORDER_READYTIMES[orders])]
     earlest_deadline_order = orders[np.argmin(ORDER_DEADLINES[orders])]
-
     if ALL_T[rider][latest_readytime_order, earlest_deadline_order + K] + ORDER_READYTIMES[latest_readytime_order] > \
             ORDER_DEADLINES[earlest_deadline_order]:
         return -3, 0, (orders, orders), 0, 0.0
 
+    # if len(orders) > 1:
+    #     t = 1
+    # n = 2
+    # index_permutations : numpy array [[0,1], [1,0]]
+    # order_permutations : list [[0,1], [1,0]]
     n = len(orders)
     index_permutations = PRECALCULATED_PERMUTATIONS[n]
     order_permutations = []
     for i in range(len(index_permutations)):
         order_permutations.append(orders[index_permutations[i]])
 
+    # 각 order permutation 에 해당하는 customer delivery에 소요되는 distance, arrival time 계산
     dlv_distance_lookuptable = []
     dlv_arrivaltimes_lookuptable = []
 
@@ -746,6 +833,7 @@ def get_optimal_route_numba_v2(orders, rider, ORDER_READYTIMES, ORDER_DEADLINES,
             rt = max(rt + ALL_T[rider][i, j], ORDER_READYTIMES[j])
             shop_dist += D[i, j]
 
+        # max ready time + moving time from last shop to first order > first order deadline
         if rt + ALL_T[rider][shop_seq[-1], earlest_deadline_order + K] > ORDER_DEADLINES[earlest_deadline_order]:
             continue
 
@@ -862,27 +950,27 @@ def remove_duplicates_in_candidates(candidate_orders, candidate_riders):
 
 
 def remove_duplicates_in_bundles(feasible_riders_for_orders, feasible_bundles):
-    feasible_riders_for_orders_dict = {
-        tuple(np.sort(ro[0])): ro[1]
-        for ro in feasible_riders_for_orders
-    }
-
-    feasible_riders_for_orders_no_dup = [
-        (np.array(k, dtype=np.int16), v) for k, v in feasible_riders_for_orders_dict.items()
-    ]
-
+    # feasible_riders_for_orders_dict = {
+    #     tuple(np.sort(ro[0])): ro[1] for ro in feasible_riders_for_orders
+    # }
+    # feasible_riders_for_orders_no_dup = [
+    #     (np.array(k, dtype=np.int16), v) for k, v in feasible_riders_for_orders_dict.items()
+    # ]
     feasible_bundles_no_dup = []
     feasible_bundles_set = set()
     for bd in feasible_bundles:
-        tuple_bd = (tuple(np.sort(bd[0][0])), bd[1])
+        tuple_bd = (tuple(np.sort(bd[0][0])), bd[1])  # order sequence, rider type
         if tuple_bd not in feasible_bundles_set:
             feasible_bundles_set.add(tuple_bd)
             feasible_bundles_no_dup.append(bd)
+        else:
+            print(f'removed ${tuple_bd}')
+            t = 1
 
-    return feasible_riders_for_orders_no_dup, feasible_bundles_no_dup
+    return [], feasible_bundles_no_dup
 
 
-@numba.njit(cache=True)
+# @numba.njit(cache=True)
 def get_cur_time_numba(get_system_clock, as_seconds_double):
     system_clock = get_system_clock()
     current_time = as_seconds_double(system_clock)
@@ -1084,13 +1172,6 @@ def batch_get_optimal_route_with_riders_numba_v2(candidate_orders, candidate_rid
         riders = candidate_riders[idx]
 
         fb_idx = idx * 3
-
-        # 주어진 order set에 가능한 riders 조함
-        # [0] -> Bike only
-        # [2] -> Car only
-        # [0,2] -> Bike & Car
-        # [0,1,2] -> All)
-        # Walk만 가능한건 불가능!
 
         feasible_riders = []
 
