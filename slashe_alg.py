@@ -403,6 +403,8 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     print('before mip')
     output_data = []
     for feasible_bundles in all_feasible_bundles:
+        print(feasible_bundles)
+        print(type(feasible_bundles))
         print(type(feasible_bundles[0]))
         print(type(feasible_bundles[0][1]))
         print(type(feasible_bundles[1]))
