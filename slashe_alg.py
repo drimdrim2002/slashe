@@ -405,16 +405,8 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
 
     final_bundles = solve_mip_with_or_tools(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
 
-    print('final bundles with covering!!!')
-    for feasible_bundles in final_bundles:
-        shop_seq = feasible_bundles[0][0]
-        dlvry_seq = feasible_bundles[0][1]
-        rider_type = feasible_bundles[1]
-        dist = feasible_bundles[2]
-        vol = feasible_bundles[3]
-        cost = feasible_bundles[4]
-        status = feasible_bundles[5]
-        print(shop_seq, ", ", dlvry_seq, ', ', rider_type)
+    print('########## FIRST MIP #####################')
+    show_final_bundles(final_bundles)
 
 
     final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
@@ -425,6 +417,9 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     if status == True:
         remaining_time = timelimit - (time.time() - start_time)
         final_bundles = solve_mip_with_or_tools(final_bundles, ALL_AVA, K, remaining_time - 0.5, covering=False)
+        print('########## SECOND MIP #####################')
+        show_final_bundles(final_bundles)
+
 
     RIDER_TYPE = {0: 'BIKE', 1: 'WALK', 2: 'CAR'}
     solution = [
@@ -433,6 +428,14 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
     ]
 
     return solution
+
+
+def show_final_bundles(final_bundles):
+    for feasible_bundles in final_bundles:
+        shop_seq = feasible_bundles[0][0]
+        dlvry_seq = feasible_bundles[0][1]
+        rider_type = feasible_bundles[1]
+        print(shop_seq, ", ", dlvry_seq, ', ', rider_type)
 
 
 def deprecated_write_input(all_feasible_bundles):
@@ -1018,7 +1021,7 @@ def remove_duplicates_in_bundles(feasible_riders_for_orders, feasible_bundles):
             feasible_bundles_set.add(tuple_bd)
             feasible_bundles_no_dup.append(bd)
         else:
-            print(f'removed ${tuple_bd}')
+            # print(f'removed ${tuple_bd}')
             t = 1
 
     return [], feasible_bundles_no_dup
