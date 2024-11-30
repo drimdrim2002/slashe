@@ -12,7 +12,8 @@ import math
 import time
 import concurrent.futures
 import sys
-
+import time
+from ortools.linear_solver import pywraplp
 
 def solve_mip_with_gurobi(feasible_bundles, ALL_AVA, K, timelimit, covering=False):
     print(f'solve mip with corvering :{covering}')
@@ -30,6 +31,8 @@ def solve_mip_with_gurobi(feasible_bundles, ALL_AVA, K, timelimit, covering=Fals
 
     for idx, bdl in enumerate(feasible_bundles):
         for k in get_bdl_dlv_seq(bdl):
+            if k == 50:
+                t = 1
             bd_to_k[k].append(idx)
 
         r = get_bdl_rider(bdl)
@@ -72,10 +75,77 @@ def solve_mip_with_gurobi(feasible_bundles, ALL_AVA, K, timelimit, covering=Fals
         print(f'* Objective value: {m.objVal}')
 
 
+def solve_mip_with_or_tools(feasible_bundles, ALL_AVA, K, timelimit, covering=False):
+    print(f'solve mip with covering: {covering}')
+    mip_start_time = time.time()
+
+    get_bdl_shop_seq = lambda b: b[0][0]
+    get_bdl_dlv_seq = lambda b: b[0][1]
+    get_bdl_rider = lambda b: b[1]
+    get_bdl_dist = lambda b: b[2]
+    get_bdl_vol = lambda b: b[3]
+    get_bdl_cost = lambda b: b[4]
+
+    bd_to_k = {k: [] for k in range(K)}
+    bd_to_r = {r: [] for r in [0, 1, 2]}
+
+    for idx, bdl in enumerate(feasible_bundles):
+        for k in get_bdl_dlv_seq(bdl):
+            bd_to_k[k].append(idx)
+        r = get_bdl_rider(bdl)
+        bd_to_r[r].append(idx)
+
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    if not solver:
+        print('Solver not found.')
+        return
+
+    x = []
+    for i in range(len(feasible_bundles)):
+        x.append(solver.IntVar(0, 1, f'x[{i}]'))
+    print("Number of variables =", solver.NumVariables())
+
+    objective = solver.Objective()
+    for idx, bd in enumerate(feasible_bundles):
+        objective.SetCoefficient(x[idx], get_bdl_cost(bd) / K)
+    objective.SetMinimization()
+
+    for r in [0, 1, 2]:
+        constraint = solver.RowConstraint(0, int(ALL_AVA[r]), "")
+        for idx in bd_to_r[r]:
+            constraint.SetCoefficient(x[idx], 1,)
+
+    if covering:
+        for k in range(K):
+            constraint = solver.RowConstraint(1, solver.infinity(), "")
+            for idx in bd_to_k[k]:
+                constraint.SetCoefficient(x[idx], 1)
+    else:
+        for k in range(K):
+            constraint = solver.RowConstraint(1, 1, f'order_{k}_bundle')
+            for idx in bd_to_k[k]:
+                constraint.SetCoefficient(x[idx], 1)
+
+    remaining_time = timelimit - (time.time() - mip_start_time)
+    solver.SetTimeLimit(int(remaining_time * 1000))  # milliseconds
+
+    status = solver.Solve()
+
+    final_bundles = []
+    if status == pywraplp.Solver.OPTIMAL:
+        print('* solution found:')
+        for idx, bd in enumerate(feasible_bundles):
+            if x[idx].solution_value() > 0.5:
+                final_bundles.append(feasible_bundles[idx])
+        print(f'* Objective value: {solver.Objective().Value()}')
+    else:
+        print('No optimal solution found.')
+    return final_bundles
+
 if __name__ == '__main__':
     available_riders = np.array([10, 15, 50])
     K = 50
-    file_name = 'all_feasible_bundles_K50_1.txt'
+    file_name = 'mip_solve_input.txt'
     with open(file_name, 'r') as file:
         all_feasible_bundles_json = json.load(file)
 
@@ -93,3 +163,4 @@ if __name__ == '__main__':
         all_feasible_bundles.append(tuple_line)
 
     solve_mip_with_gurobi(all_feasible_bundles, available_riders, K, 60, True)
+    # solve_mip_with_or_tools(all_feasible_bundles, available_riders, K, 60, True)
