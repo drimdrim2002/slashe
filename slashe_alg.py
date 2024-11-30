@@ -772,6 +772,7 @@ def find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READY
     bundles_with_duplicates = set()
     for order, indices in order_to_bundles.items():
         if len(indices) > 1:
+            print (indices)
             bundles_with_duplicates.update(indices)
 
     status = False
@@ -785,6 +786,8 @@ def find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READY
         status = True
 
     duplicate_bundles = [final_bundles[i] for i in sorted(bundles_with_duplicates)]
+
+    show_final_bundles(duplicate_bundles)
 
     subset_bundles = []
     for bundle in duplicate_bundles:
