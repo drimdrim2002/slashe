@@ -11,6 +11,8 @@ import math
 import time
 import concurrent.futures
 import sys
+from ortools.linear_solver import pywraplp
+
 
 
 def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
@@ -395,13 +397,47 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
 
     remaining_time = timelimit - (time.time() - start_time)
 
-    file_name = 'all_feasible_bundles_K50_1.txt'
 
     # bundle_feasibility.append(
     #     ((shop_seq.astype(np.int16), dlv_seq.astype(np.int16)), rider, dist, vol, cost, status))
     delimiter = '///'
-    print('before mip')
+    # deprecated_write_input(all_feasible_bundles)
+
+    final_bundles = solve_mip_with_or_tools(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
+
+    print('final bundles with covering!!!')
+    for feasible_bundles in final_bundles:
+        shop_seq = feasible_bundles[0][0]
+        dlvry_seq = feasible_bundles[0][1]
+        rider_type = feasible_bundles[1]
+        dist = feasible_bundles[2]
+        vol = feasible_bundles[3]
+        cost = feasible_bundles[4]
+        status = feasible_bundles[5]
+        print(shop_seq, ", ", dlvry_seq, ', ', rider_type)
+
+
+    final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
+                                                                              ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T,
+                                                                              ALL_VC, ALL_FC, ALL_CAPA,
+                                                                              PRECALCULATED_PERMUTATIONS)
+
+    if status == True:
+        remaining_time = timelimit - (time.time() - start_time)
+        final_bundles = solve_mip_with_or_tools(final_bundles, ALL_AVA, K, remaining_time - 0.5, covering=False)
+
+    RIDER_TYPE = {0: 'BIKE', 1: 'WALK', 2: 'CAR'}
+    solution = [
+        [RIDER_TYPE[bundle[1]], bundle[0][0].tolist(), bundle[0][1].tolist()]
+        for bundle in final_bundles
+    ]
+
+    return solution
+
+
+def deprecated_write_input(all_feasible_bundles):
     output_data = []
+    file_name = 'mip_solve_input.txt'
     for feasible_bundles in all_feasible_bundles:
         print(feasible_bundles)
         print(type(feasible_bundles))
@@ -434,40 +470,10 @@ def solve(K, all_orders, all_riders, dist_mat, timelimit=60):
         output_line['status'] = int(status)
         output_data.append(output_line)
         print(shop_seq, ", ", dlvry_seq, ', ', rider_type, ', ', dist, ' ', vol, ', ', cost, ', ', status)
-
     with open(file_name, "w") as file:
         json.dump(output_data, file, indent=4)
 
-    final_bundles = solve_mip(all_feasible_bundles, ALL_AVA, K, remaining_time - slack, covering=True)
 
-    print('final bundles with covering!!!')
-    for feasible_bundles in final_bundles:
-        shop_seq = feasible_bundles[0][0]
-        dlvry_seq = feasible_bundles[0][1]
-        rider_type = feasible_bundles[1]
-        dist = feasible_bundles[2]
-        vol = feasible_bundles[3]
-        cost = feasible_bundles[4]
-        status = feasible_bundles[5]
-        print(shop_seq, ", ", dlvry_seq, ', ', rider_type)
-
-
-    final_bundles, status = find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READYTIMES,
-                                                                              ORDER_DEADLINES, ORDER_VOLUMES, D, ALL_T,
-                                                                              ALL_VC, ALL_FC, ALL_CAPA,
-                                                                              PRECALCULATED_PERMUTATIONS)
-
-    if status == True:
-        remaining_time = timelimit - (time.time() - start_time)
-        final_bundles = solve_mip(final_bundles, ALL_AVA, K, remaining_time - 0.5, covering=False)
-
-    RIDER_TYPE = {0: 'BIKE', 1: 'WALK', 2: 'CAR'}
-    solution = [
-        [RIDER_TYPE[bundle[1]], bundle[0][0].tolist(), bundle[0][1].tolist()]
-        for bundle in final_bundles
-    ]
-
-    return solution
 # numpy 배열을 리스트로 변환하는 함수
 def convert_numpy_to_list(obj):
     if isinstance(obj, np.ndarray):
@@ -753,7 +759,7 @@ def find_cross_bundle_duplicates_and_generate_subsets(final_bundles, ORDER_READY
         shop_seq, dlv_seq = bundle[0]
         shop_orders = tuple(sorted(shop_seq))
 
-        # order별로 들어있는 bundle idx 
+        # order별로 들어있는 bundle idx
         for order in set(shop_orders):
             if order not in order_to_bundles:
                 order_to_bundles[order] = []
@@ -1301,3 +1307,72 @@ def batch_get_optimal_route_with_riders_numba_v2(candidate_orders, candidate_rid
 
     # return [rb for rb in feasible_riders_for_orders if len(rb[1]) > 0], [fb for fb in bundle_feasibility if fb[-1] == 0]
     return feasible_riders_for_orders, bundle_feasibility
+
+
+
+def solve_mip_with_or_tools(feasible_bundles, ALL_AVA, K, timelimit, covering=False):
+    print(f'solve mip with covering: {covering}')
+    mip_start_time = time.time()
+
+    get_bdl_shop_seq = lambda b: b[0][0]
+    get_bdl_dlv_seq = lambda b: b[0][1]
+    get_bdl_rider = lambda b: b[1]
+    get_bdl_dist = lambda b: b[2]
+    get_bdl_vol = lambda b: b[3]
+    get_bdl_cost = lambda b: b[4]
+
+    bd_to_k = {k: [] for k in range(K)}
+    bd_to_r = {r: [] for r in [0, 1, 2]}
+
+    for idx, bdl in enumerate(feasible_bundles):
+        for k in get_bdl_dlv_seq(bdl):
+            bd_to_k[k].append(idx)
+        r = get_bdl_rider(bdl)
+        bd_to_r[r].append(idx)
+
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    if not solver:
+        print('Solver not found.')
+        return
+
+    x = []
+    for i in range(len(feasible_bundles)):
+        x.append(solver.IntVar(0, 1, f'x[{i}]'))
+    print("Number of variables =", solver.NumVariables())
+
+    objective = solver.Objective()
+    for idx, bd in enumerate(feasible_bundles):
+        objective.SetCoefficient(x[idx], get_bdl_cost(bd) / K)
+    objective.SetMinimization()
+
+    for r in [0, 1, 2]:
+        constraint = solver.RowConstraint(0, int(ALL_AVA[r]), "")
+        for idx in bd_to_r[r]:
+            constraint.SetCoefficient(x[idx], 1,)
+
+    if covering:
+        for k in range(K):
+            constraint = solver.RowConstraint(1, solver.infinity(), "")
+            for idx in bd_to_k[k]:
+                constraint.SetCoefficient(x[idx], 1)
+    else:
+        for k in range(K):
+            constraint = solver.RowConstraint(1, 1, f'order_{k}_bundle')
+            for idx in bd_to_k[k]:
+                constraint.SetCoefficient(x[idx], 1)
+
+    remaining_time = timelimit - (time.time() - mip_start_time)
+    solver.SetTimeLimit(int(remaining_time * 1000))  # milliseconds
+
+    status = solver.Solve()
+
+    final_bundles = []
+    if status == pywraplp.Solver.OPTIMAL:
+        print('* solution found:')
+        for idx, bd in enumerate(feasible_bundles):
+            if x[idx].solution_value() > 0.5:
+                final_bundles.append(feasible_bundles[idx])
+        print(f'* Objective value: {solver.Objective().Value()}')
+    else:
+        print('No optimal solution found.')
+    return final_bundles

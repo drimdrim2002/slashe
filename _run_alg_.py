@@ -86,7 +86,7 @@ def main(prob_file, timelimit):
 
 if __name__ == '__main__':
 
-    main("D:\Project\Python\ogc_solutions\input\TEST_K50_2.json", 60)
+    main("D:\Project\Python\ogc_solutions\input\TEST_K100_1.json", 60)
 
 
 
