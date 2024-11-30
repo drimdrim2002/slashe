@@ -162,5 +162,5 @@ if __name__ == '__main__':
         tuple_line = ((shop_seq, dlvry_seq), rider_type, dist, vol, cost, status)
         all_feasible_bundles.append(tuple_line)
 
-    solve_mip_with_gurobi(all_feasible_bundles, available_riders, K, 60, True)
-    # solve_mip_with_or_tools(all_feasible_bundles, available_riders, K, 60, True)
+    # solve_mip_with_gurobi(all_feasible_bundles, available_riders, K, 60, True)
+    solve_mip_with_or_tools(all_feasible_bundles, available_riders, K, 60, True)
